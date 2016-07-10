@@ -1,5 +1,7 @@
-var P = (function() {
-  'use strict';
+function P() {
+  var P = this,
+  self = this,
+  STACK, self, S, R, C, WARP, CALLS, BASE, THREAD, IMMEDIATE, VISUAL;;
 
   var SCALE = window.devicePixelRatio || 1;
 
@@ -292,7 +294,7 @@ var P = (function() {
     var request = new CompositeRequest;
 
     request.defer = true;
-    request.add(P.IO.load('http://crossorigin.me/http://scratch.mit.edu/projects/' + id + '/').onLoad(function(data) {
+    request.add(IO.load('http://crossorigin.me/http://scratch.mit.edu/projects/' + id + '/').onLoad(function(data) {
       var m = /<title>\s*(.+?)(\s+on\s+Scratch)?\s*<\/title>/.exec(data);
       if (callback) request.onLoad(callback.bind(self));
       if (m) {
@@ -1027,6 +1029,159 @@ var P = (function() {
     }.bind(this));
 
     this.promptButton.addEventListener(hasTouchEvents ? 'touchstart' : 'mousedown', this.submitPrompt.bind(this));
+
+
+
+    this.framerate = 30;
+
+
+    this.startThread = function(sprite, base) {
+      var thread = {
+        sprite: sprite,
+        base: base,
+        fn: base,
+        calls: [{args: [], stack: [{}]}]
+      };
+      for (var i = 0; i < this.queue.length; i++) {
+        var q = this.queue[i];
+        if (q && q.sprite === sprite && q.base === base) {
+          this.queue[i] = thread;
+          return;
+        }
+      }
+      this.queue.push(thread);
+    };
+
+    this.initRuntime = function() {
+      this.queue = [];
+      this.onError = this.onError.bind(this);
+    };
+
+    this.triggerFor = function(sprite, event, arg) {
+      var threads;
+      if (event === 'whenClicked') {
+        threads = sprite.listeners.whenClicked;
+      } else if (event === 'whenCloned') {
+        threads = sprite.listeners.whenCloned;
+      } else if (event === 'whenGreenFlag') {
+        threads = sprite.listeners.whenGreenFlag;
+      } else if (event === 'whenIReceive') {
+        threads = sprite.listeners.whenIReceive[('' + arg).toLowerCase()];
+      } else if (event === 'whenKeyPressed') {
+        threads = sprite.listeners.whenKeyPressed[arg];
+      } else if (event === 'whenSceneStarts') {
+        threads = sprite.listeners.whenSceneStarts[('' + arg).toLowerCase()];
+      }
+      if (threads) {
+        for (var i = 0; i < threads.length; i++) {
+          this.startThread(sprite, threads[i]);
+        }
+      }
+      return threads || [];
+    };
+
+    this.trigger = function(event, arg) {
+      var threads = [];
+      for (var i = this.children.length; i--;) {
+        if (this.children[i].isSprite) {
+          threads = threads.concat(this.triggerFor(this.children[i], event, arg));
+        }
+      }
+      return threads.concat(this.triggerFor(this, event, arg));
+    };
+
+    this.triggerGreenFlag = function() {
+      this.timerStart = this.now();
+      this.trigger('whenGreenFlag');
+    };
+
+    this.start = function() {
+      this.isRunning = true;
+      if (this.interval) return;
+      addEventListener('error', this.onError);
+      this.baseTime = Date.now();
+      this.interval = setInterval(this.step.bind(this), 1000 / this.framerate);
+    };
+
+    this.pause = function() {
+      if (this.interval) {
+        this.baseNow = this.now();
+        clearInterval(this.interval);
+        delete this.interval;
+        removeEventListener('error', this.onError);
+      }
+      this.isRunning = false;
+    };
+
+    this.stopAll = function() {
+      this.hidePrompt = false;
+      this.prompter.style.display = 'none';
+      this.promptId = this.nextPromptId = 0;
+      this.queue.length = 0;
+      this.resetFilters();
+      this.stopSounds();
+      for (var i = 0; i < this.children.length; i++) {
+        var c = this.children[i];
+        if (c.isClone) {
+          c.remove();
+          this.children.splice(i, 1);
+          i -= 1;
+        } else if (c.isSprite) {
+          c.resetFilters();
+          if (c.saying) c.say('');
+          c.stopSounds();
+        }
+      }
+    };
+
+    this.now = function() {
+      return this.baseNow + Date.now() - this.baseTime;
+    };
+
+    this.step = function() {
+      self = this;
+      VISUAL = false;
+      var start = Date.now();
+      do {
+        var queue = this.queue;
+        for (THREAD = 0; THREAD < queue.length; THREAD++) {
+          if (queue[THREAD]) {
+            S = queue[THREAD].sprite;
+            IMMEDIATE = queue[THREAD].fn;
+            BASE = queue[THREAD].base;
+            CALLS = queue[THREAD].calls;
+            C = CALLS.pop();
+            STACK = C.stack;
+            R = STACK.pop();
+            queue[THREAD] = undefined;
+            WARP = 0;
+            while (IMMEDIATE) {
+              var fn = IMMEDIATE;
+              IMMEDIATE = null;
+              fn();
+            }
+            STACK.push(R);
+            CALLS.push(C);
+          }
+        }
+        for (var i = queue.length; i--;) {
+          if (!queue[i]) queue.splice(i, 1);
+        }
+      } while ((self.isTurbo || !VISUAL) && Date.now() - start < 1000 / this.framerate && queue.length);
+      this.draw();
+      S = null;
+    };
+
+    this.onError = function(e) {
+      this.handleError(e.error);
+      clearInterval(this.interval);
+    };
+
+    this.handleError = function(e) {
+      console.error(e.stack);
+    };
+
+    self.Vars = this.vars;
 
     this.initRuntime();
   };
@@ -2069,20 +2224,16 @@ var P = (function() {
   var AudioContext = window.AudioContext || window.webkitAudioContext;
   var audioContext = AudioContext && new AudioContext;
 
-  return {
-    hasTouchEvents: hasTouchEvents,
-    getKeyCode: getKeyCode,
-    audioContext: audioContext,
-    IO: IO,
-    Base: Base,
-    Stage: Stage,
-    Sprite: Sprite,
-    Watcher: Watcher
-  };
+  this.hasTouchEvents = hasTouchEvents;
+  this.getKeyCode = getKeyCode;
+  this.audioContext = audioContext;
+  this.IO = IO;
+  this.Base = Base;
+  this.Stage = Stage;
+  this.Sprite = Sprite;
+  this.Watcher = Watcher;
 
-}());
-
-P.compile = (function() {
+  this.compile = (function() {
   'use strict';
 
   var LOG_PRIMITIVES;
@@ -2145,6 +2296,10 @@ P.compile = (function() {
       for (var i = 0; i < script.length; i++) {
         compile(script[i]);
       }
+    };
+
+    var varPers = function(name) {
+      return "'" + name + "'.indexOf(String.fromCharCode(0x2601)) == 0";
     };
 
     var varRef = function(name) {
@@ -2848,12 +3003,16 @@ P.compile = (function() {
 
       } else if (block[0] === 'setVar:to:') { /* Data */
 
+        var pers = varPers(block[1]);
         source += varRef(block[1]) + ' = ' + val(block[2]) + ';\n';
+        source += 'if(' + pers + ') {\nwindow.cloud["' + block[1] + '"] = ' + ref + ';\nwindow.cloud.update();\n}\n';
 
       } else if (block[0] === 'changeVar:by:') {
 
         var ref = varRef(block[1]);
+        var pers = varPers(block[1]);
         source += ref + ' = (+' + ref + ' || 0) + ' + num(block[2]) + ';\n';
+        source += 'if(' + pers + ') {\nwindow.cloud["' + block[1] + '"] = ' + ref + ';\nwindow.cloud.update();\n}\n';
 
       } else if (block[0] === 'append:toList:') {
 
@@ -3231,10 +3390,8 @@ P.compile = (function() {
 
 }());
 
-P.runtime = (function() {
+  this.runtime = (function() {
   'use strict';
-
-  var self, S, R, STACK, C, WARP, CALLS, BASE, THREAD, IMMEDIATE, VISUAL;
 
   var bool = function(v) {
     return +v !== 0 && v !== '' && v !== 'false' && v !== false;
@@ -3352,7 +3509,7 @@ P.runtime = (function() {
 
   var epoch = Date.UTC(2000, 0, 1);
 
-  var timeAndDate = P.Watcher.prototype.timeAndDate = function(format) {
+  Watcher.timeAndDate = function(format) {
     switch (format) {
       case 'year':
         return new Date().getFullYear();
@@ -3371,7 +3528,6 @@ P.runtime = (function() {
     }
     return 0;
   };
-
   var getVars = function(name) {
     return self.vars[name] !== undefined ? self.vars : S.vars;
   };
@@ -3516,9 +3672,8 @@ P.runtime = (function() {
 
   var VOLUME = 0.3;
 
-  var audioContext = P.audioContext;
   if (audioContext) {
-    var wavBuffers = P.IO.wavBuffers;
+    var wavBuffers = IO.wavBuffers;
 
     var volumeNode = audioContext.createGain();
     volumeNode.gain.value = VOLUME;
@@ -3697,159 +3852,6 @@ P.runtime = (function() {
     };
   };
 
-  // Internal definition
-  (function() {
-    'use strict';
-
-    P.Stage.prototype.framerate = 30;
-
-    P.Stage.prototype.initRuntime = function() {
-      this.queue = [];
-      this.onError = this.onError.bind(this);
-    };
-
-    P.Stage.prototype.startThread = function(sprite, base) {
-      var thread = {
-        sprite: sprite,
-        base: base,
-        fn: base,
-        calls: [{args: [], stack: [{}]}]
-      };
-      for (var i = 0; i < this.queue.length; i++) {
-        var q = this.queue[i];
-        if (q && q.sprite === sprite && q.base === base) {
-          this.queue[i] = thread;
-          return;
-        }
-      }
-      this.queue.push(thread);
-    };
-
-    P.Stage.prototype.triggerFor = function(sprite, event, arg) {
-      var threads;
-      if (event === 'whenClicked') {
-        threads = sprite.listeners.whenClicked;
-      } else if (event === 'whenCloned') {
-        threads = sprite.listeners.whenCloned;
-      } else if (event === 'whenGreenFlag') {
-        threads = sprite.listeners.whenGreenFlag;
-      } else if (event === 'whenIReceive') {
-        threads = sprite.listeners.whenIReceive[('' + arg).toLowerCase()];
-      } else if (event === 'whenKeyPressed') {
-        threads = sprite.listeners.whenKeyPressed[arg];
-      } else if (event === 'whenSceneStarts') {
-        threads = sprite.listeners.whenSceneStarts[('' + arg).toLowerCase()];
-      }
-      if (threads) {
-        for (var i = 0; i < threads.length; i++) {
-          this.startThread(sprite, threads[i]);
-        }
-      }
-      return threads || [];
-    };
-
-    P.Stage.prototype.trigger = function(event, arg) {
-      var threads = [];
-      for (var i = this.children.length; i--;) {
-        if (this.children[i].isSprite) {
-          threads = threads.concat(this.triggerFor(this.children[i], event, arg));
-        }
-      }
-      return threads.concat(this.triggerFor(this, event, arg));
-    };
-
-    P.Stage.prototype.triggerGreenFlag = function() {
-      this.timerStart = this.now();
-      this.trigger('whenGreenFlag');
-    };
-
-    P.Stage.prototype.start = function() {
-      this.isRunning = true;
-      if (this.interval) return;
-      addEventListener('error', this.onError);
-      this.baseTime = Date.now();
-      this.interval = setInterval(this.step.bind(this), 1000 / this.framerate);
-    };
-
-    P.Stage.prototype.pause = function() {
-      if (this.interval) {
-        this.baseNow = this.now();
-        clearInterval(this.interval);
-        delete this.interval;
-        removeEventListener('error', this.onError);
-      }
-      this.isRunning = false;
-    };
-
-    P.Stage.prototype.stopAll = function() {
-      this.hidePrompt = false;
-      this.prompter.style.display = 'none';
-      this.promptId = this.nextPromptId = 0;
-      this.queue.length = 0;
-      this.resetFilters();
-      this.stopSounds();
-      for (var i = 0; i < this.children.length; i++) {
-        var c = this.children[i];
-        if (c.isClone) {
-          c.remove();
-          this.children.splice(i, 1);
-          i -= 1;
-        } else if (c.isSprite) {
-          c.resetFilters();
-          if (c.saying) c.say('');
-          c.stopSounds();
-        }
-      }
-    };
-
-    P.Stage.prototype.now = function() {
-      return this.baseNow + Date.now() - this.baseTime;
-    };
-
-    P.Stage.prototype.step = function() {
-      self = this;
-      VISUAL = false;
-      var start = Date.now();
-      do {
-        var queue = this.queue;
-        for (THREAD = 0; THREAD < queue.length; THREAD++) {
-          if (queue[THREAD]) {
-            S = queue[THREAD].sprite;
-            IMMEDIATE = queue[THREAD].fn;
-            BASE = queue[THREAD].base;
-            CALLS = queue[THREAD].calls;
-            C = CALLS.pop();
-            STACK = C.stack;
-            R = STACK.pop();
-            queue[THREAD] = undefined;
-            WARP = 0;
-            while (IMMEDIATE) {
-              var fn = IMMEDIATE;
-              IMMEDIATE = null;
-              fn();
-            }
-            STACK.push(R);
-            CALLS.push(C);
-          }
-        }
-        for (var i = queue.length; i--;) {
-          if (!queue[i]) queue.splice(i, 1);
-        }
-      } while ((self.isTurbo || !VISUAL) && Date.now() - start < 1000 / this.framerate && queue.length);
-      this.draw();
-      S = null;
-    };
-
-    P.Stage.prototype.onError = function(e) {
-      this.handleError(e.error);
-      clearInterval(this.interval);
-    };
-
-    P.Stage.prototype.handleError = function(e) {
-      console.error(e.stack);
-    };
-
-  }());
 
   /*
     copy(JSON.stringify(instruments.map(function(g) {
@@ -3907,3 +3909,4 @@ P.runtime = (function() {
   };
 
 }());
+}
